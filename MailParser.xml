@@ -1,0 +1,472 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- A description of the data types can be found in the REST API documentation.
+     The <Query> script can access a SimpleEmailDTO that includes data from the
+     received email. All other elements can access SimpleEmailDTO as well a
+     FullIncidentDataDTO, where the incident can be an existing one if the query
+     was successful, or a new one created from JSON template if it is available. -->
+
+<MailParser xmlns="http://www.resilientsystems.com/MailParser">
+
+    <!-- Expected return type is List<ConditionDTO> which can contain multiple
+         conditions to query an incident. Applicable methods for conditions can be
+         found /ns0_methodName.html -->
+
+    <Query>
+        [{
+        method: "contains",
+        field_name: "name",
+        value: mail.subject.replace("Re: ", "").replace("[CyberIntel Confidential] ","").replace("CYI1 - Informational: Member Submission: ","").replace("CYT3: Member Submission: ","").replace("CYI1 - Informational: (UPDATE 2) Member Submission: ","").replace("ANC3: ","").replace("COI: ","").replace("NCCIC / US-CERT:","").replace("[FS-ISAC Red]","").replace("[FS-ISAC Amber]","").replace("[FS-ISAC Green]","").replace("[FS-ISAC White]","")
+        }];
+    </Query>
+
+    <!-- The script element can be used to place code -->
+    <Script>
+        <![CDATA[
+        // Define Functions Here
+        function getHostName(url)
+        {
+            var match = url.match(/:\/\/(www[0-9]?\.)?(.[^/:]+)/i);
+            if (match != null && match.length > 2 && typeof match[2] === 'string' && match[2].length > 0)
+            {
+                return match[2];
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        function sleep(milliseconds) {
+            var start = new Date().getTime();
+            for (var i = 0; i < 1e7; i++) {
+                if ((new Date().getTime() - start) > milliseconds){
+                    break;
+                }
+            }
+        }
+
+        // If an incident does not exist then the following code creates a new incident
+        if (incident.id == null)
+        {
+            var mailArr = [/re:\s/gi, /\[CyberIntel Confidential\]\s/gi, /\w\w\w\d(\:|\s\-\s)/gi, /Wapack\sLabs\sReport\:\s/gi, /Informational\:\s/gi, /Member\sSubmission\:\s/gi, /Aviation\sISAC\:\s/gi, /Informational\:\s\(UPDATE\s\d\)\sMember\sSubmission\:\s/gi, /NCCIC\s\/\sUS-CERT\:/gi, /COI\:\s/gi, /\[FS-ISAC\s\w+\]/gi];
+            var mailTxt = new String(mail.subject);
+            //mailTxt = mailTxt.replace(/re: |\[CyberIntel Confidential\]\s|\w\w\w\d(\:|\s\-\s)|Wapack\sLabs\sReport\:\s|Informational\:\sMember\sSubmission\:\s|Aviation\sISAC\:\s|Informational\:\s\(UPDATE\s\d\)\sMember\sSubmission\:\s|NCCIC\s\/\sUS-CERT\:|\[FS-ISAC\s\w+\]/gi, "");
+            for (i = 0; i < mailArr.length; i++)
+            {
+                mailTxt = mailTxt.replace(mailArr[i], "");
+            }
+            incident.name = mailTxt;
+            incident.description = mail.bodyText;
+            incident.reporter = mail.from.toString().slice(1, -1);
+
+            sleep(1000);
+
+            incident.properties.incident_classification = 9665;
+
+            switch (incident.reporter)
+            {
+                    // AT&T
+                case "threat@att.com":
+                    incident.properties.source = 9666;
+                    break;
+                    // Check Point
+                case "mtp-alert@checkpoint.com":
+                    incident.properties.source = 9667;
+                    break;
+                    // CyberIntel
+                case "cyberintel@lists.fsisac.com":
+                    incident.properties.source = 9668;
+                    break;
+                    // FireEye Dev
+                case "FireEye-CMS@FRSC0001.geico.com":
+                    incident.properties.source = 9669;
+                    incident.properties.incident_classification = 9664;
+                    break;
+                    // FireEye Prd
+                case "FireEye-CMS@FRSC0005.geico.com":
+                    incident.properties.source = 9669;
+                    incident.properties.incident_classification = 9664;
+                    break;
+                    // Flashpoint
+                case "subscription@flashpoint-intel.com":
+                    incident.properties.source = 9670;
+                    break;
+                    // FS-ISAC
+                case "noreply@fsisac.com":
+                    incident.properties.source = 9671;
+                    break;
+                default:
+                    incident.properties.source = null;
+            }
+        }
+        // All code from this point on will apply to the newly created incident or any existing incidents that come back
+        // on a match
+
+        var artifacts = [];
+        var tmp = [];
+        var tmpDns = [];
+        var i = 0;
+        var regex_url = /(?=hxxp|meow|woof)([^\s]+)/gi;
+        var regex_md5 = /(\b[a-f0-9]{32}$|\b[a-f0-9]{32}\W)/gmi;
+        var regex_sha1 = /(\b[a-f0-9]{40}$|\b[a-f0-9]{40}\W)/gmi;
+        var regex_sha256 = /(\b[a-f0-9]{64}$|\b[a-f0-9]{64}\W)/gmi;
+        //var regex_ip = /([0-2]\d\d|\d\d|\d)(\.|\[\.\])([0-2]\d\d|\d\d|\d)(\.|\[\.\])([0-2]\d\d|\d\d|\d)(\.|\[\.\])([0-2]\d\d|\d\d|\d)\D/gi;
+        var regex_ip = /([0-2]\d\d|\d\d|\d)(\.|\[\.\])([0-2]\d\d|\d\d|\d)(\.|\[\.\])([0-2]\d\d|\d\d|\d)(\.|\[\.\])([0-2]\d\d|\d\d|\d)[^\d\/]/gi;
+        var regex_cidr = /([0-2]\d\d|\d\d|\d)(\.|\[\.\])([0-2]\d\d|\d\d|\d)(\.|\[\.\])([0-2]\d\d|\d\d|\d)(\.|\[\.\])([0-2]\d\d|\d\d|\d)\/([0-3]\d|\d)/gi;
+        var regex_tlp = /(\b(tlp|fs-isac)\W+(red|amber|green|white))/i;
+        var str = mail.bodyText;
+        var url;
+        var md5;
+        var sha1;
+        var sha256;
+        var ip;
+        var cidr;
+        var tlp;
+        var uniqueHash = [];
+        var uniqueUrl = [];
+        var uniqueDns = [];
+        var uniqueIp = [];
+        var uniqueCidr = [];
+
+        // Assign TLP Color
+        if ((tlp = regex_tlp.exec(str)) !== null)
+        {
+            var tmptlp = tlp[3].toString();
+            switch (tmptlp.toLowerCase())
+            {
+                    // RED
+                case "red":
+                    incident.properties.tlp = 9673;
+                    break;
+                    // AMBER
+                case "amber":
+                    incident.properties.tlp = 9674;
+                    break;
+                    // GREEN
+                case "green":
+                    incident.properties.tlp = 9675;
+                    break;
+                    // WHITE
+                case "white":
+                    incident.properties.tlp = 9676;
+                    break;
+                default:
+                    incident.properties.tlp = null;
+            }
+        }
+
+        if (incident.properties.tlp === 9673)
+        {
+            // Adds the email body text as an artifact to the ticket
+            artifacts.push(
+            {
+                'type': 'Email Body',
+                'value': mail.bodyText,
+                'description': 'Generated by IRHub_Mail Parser',
+                'inc_id': incident.id
+            });
+            incident.artifacts = artifacts;
+        }
+
+        if (incident.properties.tlp !== 9673)
+        {
+            // Regex Query for parsing malicious urls and adding them as artifacts
+            while ((url = regex_url.exec(str)) != null)
+            {
+                if (url.index == regex_url.lastIndex)
+                {
+                    regex_url.lastIndex++;
+                }
+                tmp.push(url[0].split());
+                tmp[i] = tmp[i].toString().replace(/hxxp|meow|woof/gi, "http");
+                tmp[i] = tmp[i].toString().replace(/\[\.\]/gi, ".");
+                tmpDns[i] = getHostName(tmp[i].toString());
+                i++;
+            }
+            uniqueUrl = tmp.filter(function (elem, pos)
+            {
+                return tmp.indexOf(elem) == pos;
+            });
+            for (i = 0; i < uniqueUrl.length; i++)
+            {
+                artifacts.push(
+                {
+                    'type': 'URL',
+                    'value': uniqueUrl[i],
+                    'description': 'Generated by IRHub_Mail Parser',
+                    'inc_id': incident.id
+                });
+            }
+            uniqueUrl = [];
+            tmp = [];
+            i = 0;
+
+            uniqueDns = tmpDns.filter(function (elem, pos)
+            {
+                return tmpDns.indexOf(elem) == pos;
+            });
+            for (i = 0; i < uniqueDns.length; i++)
+            {
+                artifacts.push(
+                {
+                    'type': 'DNS Name',
+                    'value': uniqueDns[i],
+                    'description': 'Generated by IRHub_Mail Parser',
+                    'inc_id': incident.id
+                });
+            }
+            uniqueDns = [];
+            tmpDns = [];
+            i = 0;
+
+            // Regex Query for parsing malicious md5 hashes and adding them as artifacts
+            while ((md5 = regex_md5.exec(str)) != null)
+            {
+                if (md5.index == regex_md5.lastIndex)
+                {
+                    regex_md5.lastIndex++;
+                }
+                tmp.push(md5[0].split());
+                tmp[i] = tmp[i].toString().replace(/\W+/gi, "");
+                i++;
+            }
+            uniqueHash = tmp.filter(function (elem, pos)
+            {
+                return tmp.indexOf(elem) == pos;
+            });
+            for (i = 0; i < uniqueHash.length; i++)
+            {
+                artifacts.push(
+                {
+                    'type': 'Malware MD5 Hash',
+                    'value': uniqueHash[i],
+                    'description': 'Generated by IRHub_Mail Parser',
+                    'inc_id': incident.id
+                });
+            }
+            uniqueHash = [];
+            tmp = [];
+            i = 0;
+
+            // Regex Query for parsing malicious sha-1 hashes and adding them as artifacts
+            while ((sha1 = regex_sha1.exec(str)) != null)
+            {
+                if (sha1.index == regex_sha1.lastIndex)
+                {
+                    regex_sha1.lastIndex++;
+                }
+                tmp.push(sha1[0].split());
+                tmp[i] = tmp[i].toString().replace(/\W+/gi, "");
+                i++;
+            }
+            uniqueHash = tmp.filter(function (elem, pos)
+            {
+                return tmp.indexOf(elem) == pos;
+            });
+            for (i = 0; i < uniqueHash.length; i++)
+            {
+                artifacts.push(
+                {
+                    'type': 'Malware SHA-1 Hash',
+                    'value': uniqueHash[i],
+                    'description': 'Generated by IRHub_Mail Parser',
+                    'inc_id': incident.id
+                });
+            }
+            uniqueHash = [];
+            tmp = [];
+            i = 0;
+
+            // Regex Query for parsing malicious sha-256 hashes and adding them as artifacts
+            while ((sha256 = regex_sha256.exec(str)) != null)
+            {
+                if (sha256.index == regex_sha256.lastIndex)
+                {
+                    regex_sha256.lastIndex++;
+                }
+                tmp.push(sha256[0].split());
+                tmp[i] = tmp[i].toString().replace(/\W+/gi, "");
+                i++;
+            }
+            uniqueHash = tmp.filter(function (elem, pos) {
+                return tmp.indexOf(elem) == pos;
+            });
+            for (i = 0; i < uniqueHash.length; i++) {
+                artifacts.push(
+                {
+                    'type': 'Malware SHA-256 Hash',
+                    'value': uniqueHash[i],
+                    'description': 'Generated by IRHub_Mail Parser',
+                    'inc_id': incident.id
+                });
+            }
+            uniqueHash = [];
+            tmp = [];
+            i = 0;
+
+            // Regex Query for parsing malicious ip addresses and adding them as artifacts
+            while ((ip = regex_ip.exec(str)) != null)
+            {
+                if (ip.index == regex_ip.lastIndex)
+                {
+                    regex_ip.lastIndex++;
+                }
+                tmp.push(ip[0].split());
+                //tmp[i] = tmp[i].toString().replace(/\[|\]|\(|\)/gi, "");
+                tmp[i] = tmp[i].toString().replace(/[^.\d]/gi, "");
+                i++;
+            }
+            uniqueIp = tmp.filter(function (elem, pos)
+            {
+                return tmp.indexOf(elem) == pos;
+            });
+            for (i = 0; i < uniqueIp.length; i++)
+            {
+                if (uniqueIp[i].toString() !== "127.0.0.1" && uniqueIp[i].toString() !== "0.0.0.0")
+                {
+                    artifacts.push(
+                    {
+                        'type': 'IP Address',
+                        'value': uniqueIp[i].toString(),
+                        'description': 'Generated by IRHub_Mail Parser',
+                        'inc_id': incident.id
+                    });
+                }
+            }
+            uniqueIp = [];
+            tmp = [];
+            i = 0;
+
+            // Regex Query for parsing malicious network cidr ranges and adding them as artifacts
+            while ((cidr = regex_cidr.exec(str)) != null)
+            {
+                if (cidr.index == regex_cidr.lastIndex)
+                {
+                    regex_cidr.lastIndex++;
+                }
+                tmp.push(cidr[0].split());
+                //tmp[i] = tmp[i].toString().replace(/\[|\]|\(|\)/gi, "");
+                tmp[i] = tmp[i].toString().replace(/[^.\d\/]/gi, "");
+                i++;
+            }
+            uniqueCidr = tmp.filter(function (elem, pos)
+            {
+                return tmp.indexOf(elem) == pos;
+            });
+            for (i = 0; i < uniqueCidr.length; i++)
+            {
+                artifacts.push(
+                {
+                    'type': 'Network CIDR Range',
+                    'value': uniqueCidr[i].toString(),
+                    'description': 'Generated by IRHub_Mail Parser',
+                    'inc_id': incident.id
+                });
+            }
+            uniqueCidr = [];
+            tmp = [];
+            i = 0;
+
+            // Adds the email body text as an artifact to the ticket
+            artifacts.push(
+            {
+                'type': 'Email Body',
+                'value': mail.bodyText,
+                'description': 'Generated by IRHub_Mail Parser',
+                'inc_id': incident.id
+            });
+
+            incident.artifacts = artifacts;
+        }
+        ]]>
+    </Script>
+
+    <!-- The PostScript element can be used to place code that will get executed after incident creation.
+         The email connector will take any action on modified data types, after the execution. This part
+         serves for the purpose to post-process incident data, e.g. add DataTables to the incident, which was
+         created in the previous step.
+
+         This is an example of how to add a row to an existing datable within the previously generated incident.
+         Prerequesites:
+         - DataTable, API name "email_data_table"
+         - DataTable column, API name "from"
+         - DataTable column, API name "to"
+         - DataTable column, API name "cc"
+         - DataTable column, API name "dateTime"
+         - DataTable column, API name "subject"
+         - DataTable column, API name "bodyText"
+    -->
+
+    <PostScript>
+        <![CDATA[
+        if (incident.id != null) {
+            /* API field names to access data table and columns */
+            var senderColumnApiName = "from";
+            var recipientsColumnApiName = "to";
+            var ccColumnApiName = "cc";
+            var timeColumnApiName = "dateTime";
+            var subjectColumnApiName = "subject";
+            var bodyColumnApiName = "bodyText";
+            var dataTableApiName = "email_data_table";
+            /*
+             * Returns dataTableTypeDefDTO for email_data_table
+             */
+            function getTableTypeDef(tablename) {
+                var
+                        types = client.get("types");
+                if (types.get(tablename) == null) {
+                    throw Error("Data table with API name " + tablename + " does not exist");
+                }
+                return types.get(tablename);
+            }
+
+            /*
+             * Returns Column Id for Column Text Name
+             */
+            function getTableColumnIDbyApiName(table, text_name) {
+                try {
+                    return table.get("fields").get(text_name).get("id");
+                } catch (e) {
+                    throw Error("Could not find ID for column with API name: " + text_name);
+                }
+            }
+
+            /*
+             * Generates and returns a dataTableRowDataDTO
+             */
+            function generate_row(table) {
+                var sender_id = getTableColumnIDbyApiName(table, senderColumnApiName);
+                var recipients_id = getTableColumnIDbyApiName(table, recipientsColumnApiName);
+                var cc_id = getTableColumnIDbyApiName(table, ccColumnApiName);
+                var time_id = getTableColumnIDbyApiName(table, timeColumnApiName);
+                var subject_id = getTableColumnIDbyApiName(table, subjectColumnApiName);
+                var body_id = getTableColumnIDbyApiName(table, bodyColumnApiName);
+
+                var row = {"cells": {}};
+                row["cells"][sender_id] = {"value": mail.from.toString().slice(1, -1)};
+                row["cells"][recipients_id] = {"value": mail.to.toString()};
+                row["cells"][cc_id] = {"value": mail.cc.toString()};
+                row["cells"][time_id] = {"value": mail.dateTime};
+                row["cells"][subject_id] = {"value": mail.subject};
+                row["cells"][body_id] = {"value": mail.bodyText};
+
+                return row;
+            }
+
+            /*
+             * Creates a new row entry in a data table.
+             *
+             * Data table:  email_data_table
+             * Columns:     sender | subject | text | time
+             */
+            var table
+                    = getTableTypeDef(dataTableApiName);
+            var table_id = table.get("id");
+            var row = generate_row(table);
+            client.post("incidents/" + incident.id + "/table_data/" + table_id + "/row_data", row);
+        }
+        ]]>
+    </PostScript>
+
+</MailParser>
